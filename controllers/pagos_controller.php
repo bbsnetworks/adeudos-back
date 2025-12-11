@@ -83,36 +83,59 @@ class PagosController {
     $db->begin_transaction();
     try {
       // 3.1 Insert pago
-      // 3.1 Insert pago
-$st = $db->prepare("
-  INSERT INTO pagos (
-    adeudo_id,
-    fecha_pago,
-    monto,
-    interes,
-    metodo,
-    referencia,
-    notas,
-    created_at
-  )
-  VALUES (?,?,?,?,?,?,?, NOW())
-");
-if (!$st) throw new Exception('SQL prepare INSERT pago: '.$db->error);
+// 3) Transacción
+$db->begin_transaction();
+try {
+  // 3.1 Insert pago (SIN capital porque es columna generada)
+  $st = $db->prepare("
+    INSERT INTO pagos (
+      adeudo_id,
+      fecha_pago,
+      monto,
+      interes,
+      metodo,
+      referencia,
+      notas,
+      created_at
+    )
+    VALUES (?,?,?,?,?,?,?, NOW())
+  ");
+  if (!$st) throw new Exception('SQL prepare INSERT pago: '.$db->error);
 
-// tipos: i = int, s = string, d = double
-$ok = $st->bind_param(
-  'isddsss',
-  $adeudoId,     // i
-  $fecha_pago,   // s
-  $monto,        // d
-  $interes,      // d
-  $metodo,       // s
-  $ref,          // s
-  $notas         // s
-);
-if (!$ok) throw new Exception('bind_param pago');
-if (!$st->execute()) throw new Exception($st->error ?: 'exec INSERT pago');
-$st->close();
+  $ok = $st->bind_param(
+    'isddsss',
+    $adeudoId,    // i
+    $fecha_pago,  // s
+    $monto,       // d
+    $interes,     // d
+    $metodo,      // s
+    $ref,         // s
+    $notas        // s
+  );
+  if (!$ok) throw new Exception('bind_param pago');
+  if (!$st->execute()) throw new Exception($st->error ?: 'exec INSERT pago');
+  $st->close();
+
+  // 3.2 Descontar capital del saldo (adeudos.monto_total)
+  $st = $db->prepare("
+    UPDATE adeudos
+    SET monto_total = GREATEST(0, monto_total - ?),
+        estado = CASE WHEN (monto_total - ?) <= 0 THEN 'liquidado' ELSE estado END,
+        updated_at = NOW()
+    WHERE id = ?
+  ");
+  if (!$st) throw new Exception('SQL prepare UPDATE adeudos: '.$db->error);
+  $ok = $st->bind_param('ddi', $capital, $capital, $adeudoId);
+  if (!$ok) throw new Exception('bind_param update adeudo');
+  if (!$st->execute()) throw new Exception($st->error ?: 'exec UPDATE adeudo');
+  $st->close();
+
+  $db->commit();
+  ok(['message' => 'Pago registrado', 'adeudo_id' => $adeudoId]);
+} catch (Throwable $e) {
+  $db->rollback();
+  fail($e->getMessage(), 500);
+}
 
 
       // 3.2 Descontar capital del saldo (adeudos.monto_total)
